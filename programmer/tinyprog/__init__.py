@@ -31,6 +31,19 @@ except (ImportError, ValueError):
 use_libusb = False
 use_pyserial = False
 
+#vvv -- call tracing
+do_trace = True
+TRACE_FILE=None
+
+if do_trace:
+    TRACE_FILE=open('/tmp/ftrace.log', 'w')
+
+def trace(message):
+    global TRACE_FILE
+    if TRACE_FILE:
+        print(message, file=TRACE_FILE)
+#^^^
+
 
 def pretty_hex(data):
     """
@@ -320,10 +333,17 @@ class TinyProg(object):
         return False
 
     def cmd(self, opcode, addr=None, data=b'', read_len=0):
+        input_addr = addr
+
         addr = b'' if addr is None else struct.pack('>I', addr)[1:]
         write_string = bytearray([opcode]) + addr + data
         cmd_write_string = b'\x01' + struct.pack(
             '<HH', len(write_string), read_len) + write_string
+
+        if input_addr and len(data) > 0:
+            trace("CMD {0} at {1} (len={2})".format(opcode, input_addr, len(data)))
+            trace(pretty_hex(cmd_write_string))
+
         self.ser.write(bytearray(cmd_write_string))
         self.ser.flush()
         return self.ser.read(read_len)
@@ -471,6 +491,7 @@ class TinyProg(object):
                 pbar.update(write_length)
 
     def program_fast(self, addr, data):
+        trace("program_fast at {0} len={1}".format(addr, len(data)))
         self.erase(addr, len(data), disable_progress=False)
         self.write(addr, data, disable_progress=False)
         read_back = self.read(addr, len(data), disable_progress=False)
@@ -493,17 +514,30 @@ class TinyProg(object):
             for offset in range(0, len(data), sector_size):
                 current_addr = addr + offset
                 current_write_data = data[offset:offset + sector_size]
+                trace("erase at {0} len={1}".format(current_addr, sector_size))
                 self.erase(current_addr, sector_size, disable_progress=True)
 
                 minor_sector_size = 256
                 for minor_offset in range(0, 4 * 1024, minor_sector_size):
                     minor_write_data = current_write_data[
                         minor_offset:minor_offset + minor_sector_size]
+                    if (False and (len(minor_write_data) < minor_sector_size)):
+                         # Short sector, pad the end
+                         pad_len = minor_sector_size - len(minor_write_data)
+                         padding = b'\xff' * pad_len
+
+                         trace("short minor sector, padding by {0} octets".format(pad_len))
+                         minor_write_data = bytearray(minor_write_data)
+                         minor_write_data.extend(padding)
+                         assert(len(minor_write_data) == minor_sector_size)
+
+                    trace("write sector at {0} len={1}".format(current_addr+minor_offset, len(minor_write_data)))
                     self.write(
                         current_addr + minor_offset,
                         minor_write_data,
                         disable_progress=True,
                         max_length=256)
+                    trace("read sector at {0} len={1}".format(current_addr+minor_offset, len(minor_write_data)))
                     minor_read_data = self.read(
                         current_addr + minor_offset,
                         len(minor_write_data),
